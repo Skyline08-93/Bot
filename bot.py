@@ -2,7 +2,6 @@ import os
 import time
 import datetime
 import pandas as pd
-import numpy as np
 import ccxt
 import requests
 from ta.trend import MACD
@@ -40,6 +39,7 @@ trade_log = []
 position = None
 entry_price = None
 max_price = None
+position_amount = None  # Храним количество купленных монет
 
 def fetch_ohlcv(symbol, timeframe, limit=100):
     data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -71,21 +71,22 @@ def place_order(side, amount, price=None):
 
 def log_trade(action, amount, price):
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    trade_log.append({'time': timestamp, 'action': action, 'amount': amount, 'price': price})
+    trade_log.append({'time': timestamp, 'action': action, 'amount': float(amount), 'price': float(price)})
     send_telegram(f"{action.upper()} {amount:.3f} SOL по цене {price:.3f} USDT\n⏱️ {timestamp}")
 
 def calculate_profit():
     df = pd.DataFrame(trade_log)
-    if df.empty or 'price' not in df: return 0, 0
-    buy_sum = df[df['action'] == 'buy']['price'].astype(float).sum()
-    sell_sum = df[df['action'] == 'sell']['price'].astype(float).sum()
-    trades = min(len(df[df['action'] == 'buy']), len(df[df['action'] == 'sell']))
+    if df.empty or 'price' not in df or 'amount' not in df:
+        return 0, 0
+    df['total'] = df['price'] * df['amount']
+    buy_sum = df[df['action'] == 'buy']['total'].sum()
+    sell_sum = df[df['action'] == 'sell']['total'].sum()
     usdt_profit = sell_sum - buy_sum
     percent_profit = (usdt_profit / CAPITAL) * 100
     return usdt_profit, percent_profit
 
 def trade():
-    global position, entry_price, max_price
+    global position, entry_price, max_price, position_amount
     df = fetch_ohlcv(SYMBOL, TIMEFRAME)
     signal_buy, signal_sell = analyze(df)
     current_price = df.iloc[-1]['close']
@@ -96,24 +97,29 @@ def trade():
         entry_price = current_price
         max_price = current_price
         position = 'long'
+        position_amount = amount
         log_trade('buy', amount, entry_price)
+
     elif position:
         max_price = max(max_price, current_price)
         stop_loss_price = entry_price * (1 + STOP_LOSS_PERCENT / 100)
         trailing_stop_price = max_price * (1 - TRAIL_GAP_PERCENT / 100)
-        amount = CAPITAL / entry_price
+        amount = position_amount
 
         if current_price <= stop_loss_price:
             place_order('sell', amount)
             position = None
+            position_amount = None
             log_trade('sell', amount, current_price)
         elif current_price >= entry_price * (1 + TRAIL_START_PROFIT / 100) and current_price <= trailing_stop_price:
             place_order('sell', amount)
             position = None
+            position_amount = None
             log_trade('sell', amount, current_price)
         elif signal_sell:
             place_order('sell', amount)
             position = None
+            position_amount = None
             log_trade('sell', amount, current_price)
 
 if __name__ == '__main__':
